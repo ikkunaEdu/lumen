@@ -34,7 +34,7 @@ dependencies for the WebAssembly targets that we make use of.
     rustup default nightly
     
     # or, in case of issues, install the 2020-03-10 nightly to match our CI
-    rustup default nightly-2020-03-10
+    rustup default nightly-2020-05-13
 
 You may also want to install the following tools for editor support (`rustfmt` will be required on
 all pull requests!):
