@@ -18,13 +18,19 @@ pub use self::term_alloc::TermAlloc;
 pub use self::virtual_alloc::{VirtualAlloc, VirtualAllocator, VirtualHeap};
 pub use self::virtual_binary_heap::VirtualBinaryHeap;
 
-use core::alloc::CannotReallocInPlace;
+use core::alloc::{AllocErr, AllocInit};
+use core::ffi::c_void;
+use core::mem::transmute;
 use core::ptr;
 
 use lazy_static::lazy_static;
 
+use liblumen_core::sys::dynamic_call::DynamicCallee;
+
 use crate::erts::exception::AllocResult;
 use crate::erts::term::prelude::Term;
+
+use super::Frame;
 
 pub const DEFAULT_STACK_SIZE: usize = 1; // 1 page
 pub const STACK_ALIGNMENT: usize = 16;
@@ -64,6 +70,12 @@ impl Stack {
             size,
             end,
         }
+    }
+
+    pub unsafe fn push_frame(&mut self, frame: &Frame) {
+        let symbol = frame.native().ptr();
+        let dynamic_callee = transmute::<*const c_void, DynamicCallee>(symbol);
+        self.push64(dynamic_callee as u64)
     }
 
     pub unsafe fn push64(&mut self, value: u64) {
@@ -131,14 +143,14 @@ pub fn stack(size: usize) -> AllocResult<Stack> {
 /// Reallocate a process heap, in place
 ///
 /// If reallocating and trying to grow the heap, if the allocation cannot be done
-/// in place, then `Err(CannotReallocInPlace)` will be returned
+/// in place, then `Err(AllocErr)` will be returned
 #[inline]
 pub unsafe fn realloc(
     heap: *mut Term,
     size: usize,
     new_size: usize,
-) -> Result<*mut Term, CannotReallocInPlace> {
-    PROC_ALLOC.realloc_in_place(heap, size, new_size)
+) -> Result<*mut Term, AllocErr> {
+    PROC_ALLOC.realloc_in_place(heap, size, new_size, AllocInit::Zeroed)
 }
 
 /// Deallocate a heap previously allocated via `heap`

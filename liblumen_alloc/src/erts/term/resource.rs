@@ -1,6 +1,6 @@
 /// A resource is something from a BIF or NIF that needs to be memory managed, but cannot be
 /// converted to a normal Term.
-use core::alloc::Layout;
+use core::alloc::{AllocInit, Layout};
 use core::any::{Any, TypeId};
 use core::convert::TryFrom;
 use core::fmt::{self, Debug, Display};
@@ -282,8 +282,8 @@ impl ResourceInner {
         let layout = Layout::new::<Self>();
 
         unsafe {
-            let ptr = sys_alloc::alloc(layout)
-                .map(|(ptr, _)| ptr)
+            let ptr = sys_alloc::alloc(layout, AllocInit::Uninitialized)
+                .map(|memory_block| memory_block.ptr)
                 .map_err(|_| alloc!())?
                 .cast::<Self>()
                 .as_ptr();

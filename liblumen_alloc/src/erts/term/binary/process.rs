@@ -1,4 +1,4 @@
-use core::alloc::Layout;
+use core::alloc::{AllocInit, Layout};
 use core::convert::TryFrom;
 use core::fmt::{self, Debug};
 use core::iter;
@@ -137,10 +137,10 @@ impl ProcBin {
         let layout = unpadded_layout.pad_to_align();
 
         unsafe {
-            let (non_null, _) = sys_alloc::alloc(layout)?;
+            let memory_block = sys_alloc::alloc(layout, AllocInit::Uninitialized)?;
             let len = s.len();
 
-            let ptr: *mut u8 = non_null.as_ptr();
+            let ptr: *mut u8 = memory_block.ptr.as_ptr();
             ptr::write(ptr as *mut AtomicUsize, AtomicUsize::new(1));
             let flags_ptr = ptr.offset(flags_offset as isize) as *mut BinaryFlags;
             let flags = BinaryFlags::new(encoding).set_size(len);

@@ -1,3 +1,4 @@
+use core::alloc::{AllocErr, AllocInit, MemoryBlock, ReallocPlacement};
 use core::cell::RefCell;
 use core::mem;
 use core::ptr::{self, NonNull};
@@ -101,23 +102,27 @@ where
     /// then other references will be invalidated, resulting in undefined behavior,
     /// the worst of which is silent corruption of memory due to reuse of blocks.
     ///
-    /// Futhermore, if the carrier itself is freed when there are still pointers
+    /// Furthermore, if the carrier itself is freed when there are still pointers
     /// to blocks in the carrier, the same undefined behavior is possible, though
-    /// depending on how the underyling memory is allocated, it may actually produce
+    /// depending on how the underlying memory is allocated, it may actually produce
     /// SIGSEGV or equivalent.
     #[inline]
-    pub unsafe fn alloc_block(&self, layout: &Layout) -> Option<NonNull<u8>> {
+    pub unsafe fn alloc_block(
+        &self,
+        layout: &Layout,
+        init: AllocInit,
+    ) -> Result<MemoryBlock, AllocErr> {
         // Try to find a block that will fit
         let mut blocks = self.blocks.borrow_mut();
         let result = blocks.find_best_fit(layout);
         // No fit, then we're done
         if result.is_none() {
-            return None;
+            return Err(AllocErr);
         }
         // We have a fit, so allocate the block and update relevant metadata
         let mut allocated = result.unwrap();
-        let ptr = allocated
-            .try_alloc(layout)
+        let memory_block = allocated
+            .try_alloc(layout, init)
             .expect("find_best_fit and try_alloc disagreed!");
         blocks.remove(allocated);
         // Allocate this block
@@ -126,7 +131,7 @@ where
             // Add the newly split block to the free blocks tree
             blocks.insert(split_block);
             // We're done, return the userdata pointer
-            return Some(ptr);
+            return Ok(memory_block);
         }
         // There was no split, so check if the neighboring block
         // thinks we're free and fix that
@@ -134,7 +139,7 @@ where
             neighbor.as_mut().set_prev_allocated();
         }
         // Return the userdata pointer
-        Some(ptr)
+        Ok(memory_block)
     }
 
     #[inline]
@@ -143,7 +148,9 @@ where
         ptr: *mut u8,
         layout: &Layout,
         new_size: usize,
-    ) -> Option<NonNull<u8>> {
+        placement: ReallocPlacement,
+        init: AllocInit,
+    ) -> Result<MemoryBlock, AllocErr> {
         // Locate the given block
         // The pointer given is for the aligned data region, so we need
         // to find the block which contains this pointer
@@ -159,18 +166,28 @@ where
                 if old_size <= new_size {
                     // Try to grow in place, otherwise proceed to realloc
                     if blk.grow_in_place(new_size) {
-                        return Some(NonNull::new_unchecked(ptr));
+                        return Ok(MemoryBlock {
+                            ptr: NonNull::new_unchecked(ptr),
+                            size: new_size,
+                        });
                     } else {
                         break;
                     }
                 } else {
                     // Shrink in place, this always succeeds for now
                     blk.shrink_in_place(new_size);
-                    return Some(NonNull::new_unchecked(ptr));
+                    return Ok(MemoryBlock {
+                        ptr: NonNull::new_unchecked(ptr),
+                        size: new_size,
+                    });
                 }
             }
 
             result = blk.next();
+        }
+
+        if placement == ReallocPlacement::InPlace {
+            return Err(AllocErr);
         }
 
         // If current is None, this realloc call was given with an invalid pointer
@@ -180,8 +197,8 @@ where
 
         // Unable to alloc in previous block, so this requires a new allocation
         let layout = Layout::from_size_align_unchecked(new_size, layout.align());
-        let new_block = self.alloc_block(&layout)?;
-        let new_ptr = new_block.as_ptr();
+        let memory_block = self.alloc_block(&layout, init)?;
+        let new_ptr = memory_block.ptr.as_ptr();
         // Copy old data into new block
         ptr::copy_nonoverlapping(ptr, new_ptr, old_size);
         // Free old block
@@ -189,7 +206,7 @@ where
         let mut blocks = self.blocks.borrow_mut();
         blocks.insert(free_block);
         // Return new block
-        Some(new_block)
+        Ok(memory_block)
     }
 
     /// Frees a block in this carrier.

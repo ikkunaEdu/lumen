@@ -1,4 +1,4 @@
-use core::alloc::{CannotReallocInPlace, Layout};
+use core::alloc::{AllocErr, AllocInit, Layout};
 use core::mem;
 use core::ptr::NonNull;
 
@@ -71,7 +71,11 @@ impl ProcessHeapAlloc {
         }
 
         // Allocate region
-        match unsafe { self.alloc.allocate(layout).map(|(ptr, _)| ptr) } {
+        match unsafe {
+            self.alloc
+                .allocate(layout, AllocInit::Zeroed)
+                .map(|memory_block| memory_block.ptr)
+        } {
             Ok(non_null) => {
                 let ptr = non_null.as_ptr() as *mut Term;
 
@@ -100,7 +104,8 @@ impl ProcessHeapAlloc {
         heap: *mut Term,
         size: usize,
         new_size: usize,
-    ) -> Result<*mut Term, CannotReallocInPlace> {
+        init: AllocInit,
+    ) -> Result<*mut Term, AllocErr> {
         // Nothing to do if the size didn't change
         if size == new_size {
             return Ok(heap);
@@ -116,17 +121,17 @@ impl ProcessHeapAlloc {
             if new_size < size {
                 return Ok(heap);
             }
-            return Err(CannotReallocInPlace);
+            return Err(AllocErr);
         }
 
         let layout = self.heap_layout(size);
         let ptr = unsafe { NonNull::new_unchecked(heap as *mut u8) };
 
-        if let Ok(_) = unsafe { self.alloc.realloc_in_place(ptr, layout, new_size) } {
+        if let Ok(_) = unsafe { self.alloc.realloc_in_place(ptr, layout, new_size, init) } {
             return Ok(heap);
         }
 
-        Err(CannotReallocInPlace)
+        Err(AllocErr)
     }
 
     /// Deallocate a process heap, releasing the memory back to the operating system

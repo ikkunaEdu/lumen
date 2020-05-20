@@ -1,3 +1,4 @@
+use core::alloc::AllocInit;
 use core::mem;
 use core::ptr::{self, NonNull};
 
@@ -80,7 +81,7 @@ where
     }
 
     /// Allocates a block within this carrier, if one is available
-    pub unsafe fn alloc_block(&self) -> Result<NonNull<u8>, AllocErr> {
+    pub unsafe fn alloc_block(&self, init: AllocInit) -> Result<NonNull<u8>, AllocErr> {
         match self.block_bit_set().alloc_block() {
             Ok(index) => {
                 // We were able to mark this block allocated
@@ -90,6 +91,10 @@ where
                 let block_size = self.block_byte_len;
                 // NOTE: If `index` is 0, the first block was selected
                 let block = first_block.add(block_size * index);
+
+                if init == AllocInit::Zeroed {
+                    block.write_bytes(0, self.block_byte_len)
+                }
 
                 // Return pointer to block
                 Ok(NonNull::new_unchecked(block))

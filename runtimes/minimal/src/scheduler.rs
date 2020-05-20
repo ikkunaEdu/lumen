@@ -154,11 +154,11 @@ impl Scheduler {
         let root = Arc::new(Process::new(
             Priority::Normal,
             None,
-            Arc::new(ModuleFunctionArity {
+            ModuleFunctionArity {
                 module: Atom::from_str("root"),
                 function: Atom::from_str("init"),
                 arity: 0,
-            }),
+            },
             ptr::null_mut(),
             0,
         ));
@@ -169,11 +169,11 @@ impl Scheduler {
         let init = Arc::new(Process::new(
             Priority::Normal,
             None,
-            Arc::new(ModuleFunctionArity {
+            ModuleFunctionArity {
                 module: Atom::from_str("undef"),
                 function: Atom::from_str("undef"),
                 arity: 0,
-            }),
+            },
             ptr::null_mut(),
             0,
         ));
@@ -552,7 +552,7 @@ fn reset_reduction_counter() -> u64 {
 #[inline(never)]
 #[cfg(all(unix, target_arch = "x86_64"))]
 unsafe fn swap_stack(prev: *mut CalleeSavedRegisters, new: *const CalleeSavedRegisters) {
-    asm!("
+    llvm_asm!("
         # Save the stack pointer, and callee-saved registers of `prev`
         movq     %rsp, ($0)
         movq     %r15, 8($0)

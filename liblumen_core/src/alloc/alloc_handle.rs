@@ -3,7 +3,9 @@ use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::ptr::{NonNull, Unique};
 
-use crate::alloc::{AllocErr, AllocRef, CannotReallocInPlace, Layout, StaticAlloc};
+use crate::alloc::{
+    AllocErr, AllocInit, AllocRef, Layout, MemoryBlock, ReallocPlacement, StaticAlloc,
+};
 
 /// This trait is an extension of `Alloc` which provides a way to obtain
 /// a reference to that allocator in a way that abstracts out the type of
@@ -113,47 +115,12 @@ impl<A: StaticAlloc> BorrowMut<A> for Global<A> {
 }
 unsafe impl<A: StaticAlloc> AllocRef for Global<A> {
     #[inline]
-    unsafe fn alloc(&mut self, layout: Layout) -> Result<(NonNull<u8>, usize), AllocErr> {
-        <A as StaticAlloc>::static_mut().alloc(layout)
+    fn alloc(&mut self, layout: Layout, init: AllocInit) -> Result<MemoryBlock, AllocErr> {
+        unsafe { <A as StaticAlloc>::static_mut().alloc(layout, init) }
     }
     #[inline]
     unsafe fn dealloc(&mut self, ptr: NonNull<u8>, layout: Layout) {
         <A as StaticAlloc>::static_mut().dealloc(ptr, layout)
-    }
-
-    #[inline]
-    unsafe fn realloc(
-        &mut self,
-        ptr: NonNull<u8>,
-        layout: Layout,
-        new_size: usize,
-    ) -> Result<(NonNull<u8>, usize), AllocErr> {
-        <A as StaticAlloc>::static_mut().realloc(ptr, layout, new_size)
-    }
-
-    #[inline]
-    unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<(NonNull<u8>, usize), AllocErr> {
-        <A as StaticAlloc>::static_mut().alloc_zeroed(layout)
-    }
-
-    #[inline]
-    unsafe fn grow_in_place(
-        &mut self,
-        ptr: NonNull<u8>,
-        layout: Layout,
-        new_size: usize,
-    ) -> Result<usize, CannotReallocInPlace> {
-        <A as StaticAlloc>::static_mut().grow_in_place(ptr, layout, new_size)
-    }
-
-    #[inline]
-    unsafe fn shrink_in_place(
-        &mut self,
-        ptr: NonNull<u8>,
-        layout: Layout,
-        new_size: usize,
-    ) -> Result<usize, CannotReallocInPlace> {
-        <A as StaticAlloc>::static_mut().shrink_in_place(ptr, layout, new_size)
     }
 }
 
@@ -213,46 +180,32 @@ unsafe impl<'a, A: AllocRef + Sync> Send for Handle<'a, A> {}
 
 unsafe impl<'a, A: AllocRef + Sync> AllocRef for Handle<'a, A> {
     #[inline]
-    unsafe fn alloc(&mut self, layout: Layout) -> Result<(NonNull<u8>, usize), AllocErr> {
-        self.0.as_mut().alloc(layout)
+    fn alloc(&mut self, layout: Layout, init: AllocInit) -> Result<MemoryBlock, AllocErr> {
+        unsafe { self.0.as_mut().alloc(layout, init) }
     }
     #[inline]
     unsafe fn dealloc(&mut self, ptr: NonNull<u8>, layout: Layout) {
         self.0.as_mut().dealloc(ptr, layout);
     }
-
     #[inline]
-    unsafe fn realloc(
+    unsafe fn grow(
         &mut self,
         ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
-    ) -> Result<(NonNull<u8>, usize), AllocErr> {
-        self.0.as_mut().realloc(ptr, layout, new_size)
+        placement: ReallocPlacement,
+        init: AllocInit,
+    ) -> Result<MemoryBlock, AllocErr> {
+        self.0.as_mut().grow(ptr, layout, new_size, placement, init)
     }
-
     #[inline]
-    unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<(NonNull<u8>, usize), AllocErr> {
-        self.0.as_mut().alloc_zeroed(layout)
-    }
-
-    #[inline]
-    unsafe fn grow_in_place(
+    unsafe fn shrink(
         &mut self,
         ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
-    ) -> Result<usize, CannotReallocInPlace> {
-        self.0.as_mut().grow_in_place(ptr, layout, new_size)
-    }
-
-    #[inline]
-    unsafe fn shrink_in_place(
-        &mut self,
-        ptr: NonNull<u8>,
-        layout: Layout,
-        new_size: usize,
-    ) -> Result<usize, CannotReallocInPlace> {
-        self.0.as_mut().shrink_in_place(ptr, layout, new_size)
+        placement: ReallocPlacement,
+    ) -> Result<MemoryBlock, AllocErr> {
+        self.0.as_mut().shrink(ptr, layout, new_size, placement)
     }
 }

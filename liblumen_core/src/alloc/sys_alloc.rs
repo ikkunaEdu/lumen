@@ -2,7 +2,9 @@ use core::cmp;
 use core::ptr::{self, NonNull};
 
 use crate::alloc::alloc_handle::{AsAllocHandle, Global};
-use crate::alloc::{AllocErr, AllocRef, GlobalAlloc, Layout};
+use crate::alloc::{
+    AllocErr, AllocInit, AllocRef, GlobalAlloc, Layout, MemoryBlock, ReallocPlacement,
+};
 use crate::sys::alloc as sys_alloc;
 
 use super::StaticAlloc;
@@ -15,13 +17,8 @@ pub struct SysAlloc;
 
 unsafe impl AllocRef for SysAlloc {
     #[inline]
-    unsafe fn alloc(&mut self, layout: Layout) -> Result<(NonNull<u8>, usize), AllocErr> {
-        sys_alloc::alloc(layout)
-    }
-
-    #[inline]
-    unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<(NonNull<u8>, usize), AllocErr> {
-        sys_alloc::alloc_zeroed(layout)
+    fn alloc(&mut self, layout: Layout, init: AllocInit) -> Result<MemoryBlock, AllocErr> {
+        unsafe { sys_alloc::alloc(layout, init) }
     }
 
     #[inline]
@@ -30,28 +27,41 @@ unsafe impl AllocRef for SysAlloc {
     }
 
     #[inline]
-    unsafe fn realloc(
+    unsafe fn grow(
         &mut self,
         ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
-    ) -> Result<(NonNull<u8>, usize), AllocErr> {
-        sys_alloc::realloc(ptr.as_ptr(), layout, new_size)
+        placement: ReallocPlacement,
+        init: AllocInit,
+    ) -> Result<MemoryBlock, AllocErr> {
+        sys_alloc::grow(ptr, layout, new_size, placement, init)
+    }
+
+    #[inline]
+    unsafe fn shrink(
+        &mut self,
+        ptr: NonNull<u8>,
+        layout: Layout,
+        new_size: usize,
+        placement: ReallocPlacement,
+    ) -> Result<MemoryBlock, AllocErr> {
+        sys_alloc::shrink(ptr, layout, new_size, placement)
     }
 }
 
 unsafe impl GlobalAlloc for SysAlloc {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        sys_alloc::alloc(layout)
-            .map(|(nn, _)| nn.as_ptr())
+        sys_alloc::alloc(layout, AllocInit::Uninitialized)
+            .map(|memory_block| memory_block.ptr.as_ptr())
             .unwrap_or(ptr::null_mut())
     }
 
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        sys_alloc::alloc_zeroed(layout)
-            .map(|(nn, _)| nn.as_ptr())
+        sys_alloc::alloc(layout, AllocInit::Zeroed)
+            .map(|memory_block| memory_block.ptr.as_ptr())
             .unwrap_or(ptr::null_mut())
     }
 
@@ -62,8 +72,8 @@ unsafe impl GlobalAlloc for SysAlloc {
 
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        sys_alloc::realloc(ptr, layout, new_size)
-            .map(|(nn, _)| nn.as_ptr())
+        sys_alloc::realloc(NonNull::new(ptr).unwrap(), layout, new_size)
+            .map(|memory_block| memory_block.ptr.as_ptr())
             .unwrap_or(ptr::null_mut())
     }
 }
@@ -95,27 +105,34 @@ impl AsAllocHandle<'static> for SysAlloc {
 /// into the new region, and frees the old region.
 #[inline]
 pub unsafe fn realloc_fallback(
-    ptr: *mut u8,
+    ptr: NonNull<u8>,
     old_layout: Layout,
     new_size: usize,
-) -> Result<(NonNull<u8>, usize), AllocErr> {
+) -> Result<MemoryBlock, AllocErr> {
     use core::intrinsics::unlikely;
 
     let old_size = old_layout.size();
 
     if unlikely(old_size == new_size) {
-        return Ok((NonNull::new_unchecked(ptr), new_size));
+        return Ok(MemoryBlock {
+            ptr,
+            size: new_size,
+        });
     }
 
     let align = old_layout.align();
     let new_layout = Layout::from_size_align(new_size, align).expect("invalid layout");
 
     // Allocate new region, using mmap for allocations larger than page size
-    let (new_ptr, new_ptr_size) = sys_alloc::alloc(new_layout)?;
+    let memory_block = sys_alloc::alloc(new_layout, AllocInit::Uninitialized)?;
     // Copy old region to new region
-    ptr::copy_nonoverlapping(ptr, new_ptr.as_ptr(), cmp::min(old_size, new_size));
+    ptr::copy_nonoverlapping(
+        ptr.as_ptr(),
+        memory_block.ptr.as_ptr(),
+        cmp::min(old_size, new_size),
+    );
     // Free old region
-    sys_alloc::free(ptr, old_layout);
+    sys_alloc::free(ptr.as_ptr(), old_layout);
 
-    Ok((new_ptr, new_ptr_size))
+    Ok(memory_block)
 }

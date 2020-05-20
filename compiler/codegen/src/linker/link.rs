@@ -29,6 +29,7 @@ use crate::meta::{CodegenResults, LibSource};
 use super::archive::{ArchiveBuilder, LlvmArchiveBuilder};
 
 enum RlibFlavor {
+    #[allow(dead_code)]
     Normal,
     StaticlibBase,
 }
@@ -103,7 +104,7 @@ pub fn link_binary(
     // Remove the temporary object file and metadata if we aren't saving temps
     for obj in codegen_results.modules.iter().filter_map(|m| m.object()) {
         if let Err(e) = remove(obj) {
-            diagnostics.error(e);
+            diagnostics.error(e).unwrap();
         }
     }
 
@@ -395,17 +396,19 @@ fn use_system_linker(
             if !prog.status.success() {
                 let mut output = prog.stderr.clone();
                 output.extend_from_slice(&prog.stdout);
-                diagnostics.error_str(&format!(
-                    "linking with `{}` failed: {}\n\
+                diagnostics
+                    .error_str(&format!(
+                        "linking with `{}` failed: {}\n\
                      \n\
                      {:?}\n\
                      \n\
                      {}",
-                    pname.display(),
-                    prog.status,
-                    &cmd,
-                    &escape_string(&output)
-                ));
+                        pname.display(),
+                        prog.status,
+                        &cmd,
+                        &escape_string(&output)
+                    ))
+                    .unwrap();
                 diagnostics.abort_if_errors();
             }
         }
@@ -426,7 +429,7 @@ fn use_system_linker(
                 linker_error = format!("{}\n\n{:?}", linker_error, &cmd);
             }
 
-            diagnostics.error_str(&linker_error);
+            diagnostics.error_str(&linker_error).unwrap();
 
             if options.target.options.is_like_msvc && linker_not_found {
                 warn!(

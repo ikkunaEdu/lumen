@@ -17,7 +17,7 @@ use core::str;
 use core_alloc::slice;
 
 use crate::alloc::alloc_handle::{AllocHandle, AsAllocHandle};
-use crate::alloc::{AllocRef, Layout};
+use crate::alloc::{AllocInit, AllocRef, Layout};
 
 /// This an alternative implementation of `Box` that
 /// supports the use of a custom allocator in place
@@ -39,8 +39,8 @@ impl<'a, T, A: ?Sized + AllocRef + Sync, H: AllocHandle<'a, AllocRef = A>> Box<'
         let layout = Layout::for_value(&t);
         let ptr = unsafe {
             alloc_handle
-                .alloc(layout)
-                .map(|(ptr, _)| ptr)
+                .alloc(layout, AllocInit::Uninitialized)
+                .map(|memory_block| memory_block.ptr)
                 .expect("failed to allocate Box")
                 .cast()
         };
@@ -65,8 +65,8 @@ impl<'a, A: ?Sized + AllocRef + Sync, H: AllocHandle<'a, AllocRef = A>> Box<'a, 
         let ptr = unsafe {
             let layout = Layout::from_size_align_unchecked(len, mem::size_of::<usize>());
             alloc_handle
-                .alloc(layout)
-                .map(|(ptr, _)| ptr)
+                .alloc(layout, AllocInit::Uninitialized)
+                .map(|memory_block| memory_block.ptr)
                 .expect("failed to allocate Box from str")
                 .as_ptr()
         };

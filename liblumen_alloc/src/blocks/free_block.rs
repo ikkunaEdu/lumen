@@ -1,3 +1,4 @@
+use core::alloc::{AllocInit, MemoryBlock};
 use core::cmp;
 use core::convert::TryFrom;
 use core::mem;
@@ -169,7 +170,7 @@ impl FreeBlock {
     /// NOTE: If the allocator changes such that blocks can be accessed by more
     /// than one thread, the `Block` internals will need to be refactored to handle
     /// that, it is _only_ designed to be accessed by one thread at a time.
-    pub fn try_alloc(&mut self, layout: &Layout) -> Result<NonNull<u8>, AllocErr> {
+    pub fn try_alloc(&mut self, layout: &Layout, init: AllocInit) -> Result<MemoryBlock, AllocErr> {
         // This is here as a safety against trying to use a FreeBlock twice
         if unlikely!(!self.header.is_free()) {
             debug_assert!(
@@ -207,7 +208,16 @@ impl FreeBlock {
 
         self.header.set_allocated();
 
-        Ok(unsafe { NonNull::new_unchecked(ptr) })
+        if init == AllocInit::Zeroed {
+            unsafe {
+                ptr.write_bytes(0, size);
+            }
+        }
+
+        Ok(MemoryBlock {
+            ptr: unsafe { NonNull::new_unchecked(ptr) },
+            size: layout.size(),
+        })
     }
 
     /// This function is used during allocation to split the current block

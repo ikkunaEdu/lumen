@@ -1,3 +1,4 @@
+use core::alloc::{AllocInit, MemoryBlock, ReallocPlacement};
 use core::cmp;
 use core::intrinsics::unlikely;
 use core::ptr::{self, NonNull};
@@ -11,7 +12,7 @@ use intrusive_collections::{LinkedListLink, UnsafeRef};
 use liblumen_core::alloc::alloc_handle::{self, AsAllocHandle};
 use liblumen_core::alloc::mmap;
 use liblumen_core::alloc::size_classes::{SizeClass, SizeClassIndex};
-use liblumen_core::alloc::{AllocErr, AllocRef, CannotReallocInPlace, Layout};
+use liblumen_core::alloc::{AllocErr, AllocRef, Layout};
 use liblumen_core::locks::RwLock;
 
 use crate::blocks::ThreadSafeBlockBitSubset;
@@ -65,7 +66,11 @@ impl SizeClassAlloc {
         self.max_size_class.to_bytes()
     }
 
-    pub unsafe fn allocate(&self, layout: Layout) -> Result<(NonNull<u8>, usize), AllocErr> {
+    pub unsafe fn allocate(
+        &self,
+        layout: Layout,
+        init: AllocInit,
+    ) -> Result<MemoryBlock, AllocErr> {
         // Ensure allocated region has enough space for carrier header and aligned block
         let size = layout.size();
         if unlikely(size > self.max_size_class.to_bytes()) {
@@ -75,8 +80,11 @@ impl SizeClassAlloc {
             binary_search_next_largest(&self.size_classes, |sc| sc.to_bytes().cmp(&size)).unwrap();
         let carriers = self.carriers[index].read();
         for carrier in carriers.iter() {
-            if let Ok(ptr) = carrier.alloc_block() {
-                return Ok((ptr, size_class.to_bytes()));
+            if let Ok(ptr) = carrier.alloc_block(init) {
+                return Ok(MemoryBlock {
+                    ptr,
+                    size: size_class.to_bytes(),
+                });
             }
         }
         drop(carriers);
@@ -88,10 +96,13 @@ impl SizeClassAlloc {
         let carrier_ptr = Self::create_carrier(*size_class)?;
         let carrier = &mut *carrier_ptr;
         // This should never fail, but we only assert that in debug mode
-        let result = carrier.alloc_block();
+        let result = carrier.alloc_block(init);
         debug_assert!(result.is_ok());
         carriers.push_front(UnsafeRef::from_raw(carrier_ptr));
-        result.map(|ptr| (ptr, size_class.to_bytes()))
+        result.map(|ptr| MemoryBlock {
+            ptr,
+            size: size_class.to_bytes(),
+        })
     }
 
     pub unsafe fn reallocate(
@@ -99,7 +110,8 @@ impl SizeClassAlloc {
         ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
-    ) -> Result<(NonNull<u8>, usize), AllocErr> {
+        init: AllocInit,
+    ) -> Result<MemoryBlock, AllocErr> {
         if unlikely(new_size > self.max_size_class.to_bytes()) {
             return Err(AllocErr);
         }
@@ -108,19 +120,26 @@ impl SizeClassAlloc {
         let new_size_class = self.size_class_for_unchecked(new_size);
         // If the size is in the same size class, we don't have to do anything
         if size_class == new_size_class {
-            return Ok((ptr, size_class.to_bytes()));
+            return Ok(MemoryBlock {
+                ptr,
+                size: size_class.to_bytes(),
+            });
         }
         // Otherwise we have to allocate in the new size class,
         // copy to that new block, and deallocate the original block
         let align = layout.align();
         let new_layout = Layout::from_size_align_unchecked(new_size, align);
-        let (new_ptr, new_ptr_size) = self.allocate(new_layout)?;
+        let memory_block = self.allocate(new_layout, init)?;
         // Copy
-        ptr::copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr(), cmp::min(size, new_size));
+        ptr::copy_nonoverlapping(
+            ptr.as_ptr(),
+            memory_block.ptr.as_ptr(),
+            cmp::min(size, memory_block.size),
+        );
         // Deallocate the original block
         self.deallocate(ptr, layout);
         // Return new block
-        Ok((new_ptr, new_ptr_size))
+        Ok(memory_block)
     }
 
     #[inline]
@@ -129,7 +148,8 @@ impl SizeClassAlloc {
         _ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
-    ) -> Result<usize, CannotReallocInPlace> {
+        _init: AllocInit,
+    ) -> Result<usize, AllocErr> {
         let size = layout.size();
         let size_class = self.size_class_for_unchecked(size);
         let new_size_class = self.size_class_for_unchecked(new_size);
@@ -141,7 +161,7 @@ impl SizeClassAlloc {
         // decide whether to reallocate or just live within the same
         // heap when the new size is smaller, rather than shrinking
         // automatically
-        Err(CannotReallocInPlace)
+        Err(AllocErr)
     }
 
     pub unsafe fn deallocate(&self, ptr: NonNull<u8>, _layout: Layout) {
@@ -179,38 +199,51 @@ impl SizeClassAlloc {
 
 unsafe impl AllocRef for SizeClassAlloc {
     #[inline]
-    unsafe fn alloc(&mut self, layout: Layout) -> Result<(NonNull<u8>, usize), AllocErr> {
-        self.allocate(layout)
+    fn alloc(&mut self, layout: Layout, init: AllocInit) -> Result<MemoryBlock, AllocErr> {
+        unsafe { self.allocate(layout, init) }
     }
 
     #[inline]
-    unsafe fn realloc(
+    unsafe fn grow(
         &mut self,
         ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
-    ) -> Result<(NonNull<u8>, usize), AllocErr> {
-        self.reallocate(ptr, layout, new_size)
+        placement: ReallocPlacement,
+        init: AllocInit,
+    ) -> Result<MemoryBlock, AllocErr> {
+        match placement {
+            ReallocPlacement::MayMove => self.reallocate(ptr, layout, new_size, init),
+            ReallocPlacement::InPlace => {
+                self.realloc_in_place(ptr, layout, new_size, init)
+                    .map(|new_size| MemoryBlock {
+                        ptr,
+                        size: new_size,
+                    })
+            }
+        }
     }
 
     #[inline]
-    unsafe fn grow_in_place(
+    unsafe fn shrink(
         &mut self,
         ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
-    ) -> Result<usize, CannotReallocInPlace> {
-        self.realloc_in_place(ptr, layout, new_size)
-    }
+        placement: ReallocPlacement,
+    ) -> Result<MemoryBlock, AllocErr> {
+        const INIT: AllocInit = AllocInit::Zeroed;
 
-    #[inline]
-    unsafe fn shrink_in_place(
-        &mut self,
-        ptr: NonNull<u8>,
-        layout: Layout,
-        new_size: usize,
-    ) -> Result<usize, CannotReallocInPlace> {
-        self.realloc_in_place(ptr, layout, new_size)
+        match placement {
+            ReallocPlacement::MayMove => self.reallocate(ptr, layout, new_size, INIT),
+            ReallocPlacement::InPlace => {
+                self.realloc_in_place(ptr, layout, new_size, INIT)
+                    .map(|new_size| MemoryBlock {
+                        ptr,
+                        size: new_size,
+                    })
+            }
+        }
     }
 
     #[inline]
